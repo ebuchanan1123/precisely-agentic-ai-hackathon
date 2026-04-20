@@ -13,7 +13,7 @@ export default function AISummary({ summary }: AISummaryProps) {
         </div>
         <h2 className="text-sm font-semibold uppercase tracking-widest text-blue-400">AI Analysis</h2>
         <span className="ml-auto rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-400">
-          Powered by Claude
+          Powered by OpenAI
         </span>
       </div>
       <p className="mt-3 text-sm leading-relaxed text-gray-300">{summary}</p>
