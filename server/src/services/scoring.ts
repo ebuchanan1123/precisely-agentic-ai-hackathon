@@ -1,140 +1,191 @@
-import type { AlternativeItem } from './alternatives.js';
+import { getPreciselyToken } from './geocode.js';
 
-export interface DecisionMetrics {
-  overallScore: number;
-  confidence: number;
-  status: 'High' | 'Medium' | 'Low';
-  insights: string[];
-  summary: string;
-  recommendedCandidateId: string | null;
-  enrichedCandidates: AlternativeItem[];
+export type BusinessType = 'coffee_shop' | 'clinic' | 'gym' | 'grocery';
+export type Priority = 'high_foot_traffic' | 'low_competition' | 'family_area' | 'premium_demographic' | 'accessibility';
+
+export interface FactorScore {
+  score: number;
+  label: string;
+  weight: number;
+  preciselySource: string;
+  fromPrecisely: boolean;
 }
 
-function normalize(value: string): string {
-  return value.trim().toLowerCase();
+export interface ScoreBreakdown {
+  addressQuality: FactorScore;
+  demographicFit: FactorScore;
+  competitionDensity: FactorScore;
+  accessibility: FactorScore;
+  commercialSuitability: FactorScore;
 }
 
-function tokenize(value: string): string[] {
-  return normalize(value)
-    .split(/[^a-z0-9]+/i)
-    .map((token) => token.trim())
-    .filter(Boolean);
+export interface SiteScore {
+  score: number;
+  confidenceLevel: 'High' | 'Medium' | 'Low';
+  breakdown: ScoreBreakdown;
+  nearbyCompetitorCount: number;
 }
 
-function buildContextOverlapScore(context: string, alternative: AlternativeItem): number {
-  if (!context.trim()) {
-    return 8;
-  }
-
-  const contextTokens = new Set(tokenize(context));
-  const alternativeTokens = tokenize(`${alternative.title} ${alternative.description}`);
-  const overlapCount = alternativeTokens.filter((token) => contextTokens.has(token)).length;
-
-  if (overlapCount >= 2) {
-    return 32;
-  }
-
-  if (overlapCount === 1) {
-    return 20;
-  }
-
-  return 6;
+interface Weights {
+  address: number;
+  demographic: number;
+  competition: number;
+  accessibility: number;
+  commercial: number;
 }
 
-function buildKeywordSignalScore(question: string, alternative: AlternativeItem): number {
-  const promptTokens = new Set(tokenize(question));
-  const alternativeTokens = tokenize(`${alternative.title} ${alternative.description}`);
-  const matchCount = alternativeTokens.filter((token) => promptTokens.has(token)).length;
+const BASE_WEIGHTS: Record<BusinessType, Weights> = {
+  coffee_shop: { address: 0.10, demographic: 0.25, competition: 0.30, accessibility: 0.25, commercial: 0.10 },
+  clinic:      { address: 0.15, demographic: 0.20, competition: 0.20, accessibility: 0.25, commercial: 0.20 },
+  gym:         { address: 0.10, demographic: 0.25, competition: 0.25, accessibility: 0.25, commercial: 0.15 },
+  grocery:     { address: 0.10, demographic: 0.30, competition: 0.25, accessibility: 0.20, commercial: 0.15 },
+};
 
-  return Math.min(22, 10 + matchCount * 4);
+function applyPriorities(weights: Weights, priorities: Priority[]): Weights {
+  const w = { ...weights };
+  for (const p of priorities) {
+    if (p === 'high_foot_traffic') { w.accessibility = Math.min(0.45, w.accessibility + 0.07); w.commercial -= 0.03; w.address -= 0.04; }
+    if (p === 'low_competition')   { w.competition   = Math.min(0.45, w.competition   + 0.07); w.commercial -= 0.04; w.demographic -= 0.03; }
+    if (p === 'family_area' || p === 'premium_demographic') { w.demographic = Math.min(0.45, w.demographic + 0.07); w.address -= 0.04; w.commercial -= 0.03; }
+    if (p === 'accessibility')     { w.accessibility = Math.min(0.45, w.accessibility + 0.07); w.commercial -= 0.04; w.address -= 0.03; }
+  }
+  const total = w.address + w.demographic + w.competition + w.accessibility + w.commercial;
+  return {
+    address:      Math.max(0.05, w.address      / total),
+    demographic:  Math.max(0.05, w.demographic  / total),
+    competition:  Math.max(0.05, w.competition  / total),
+    accessibility:Math.max(0.05, w.accessibility/ total),
+    commercial:   Math.max(0.05, w.commercial   / total),
+  };
 }
 
-function buildSignalStrengthScore(alternative: AlternativeItem): number {
-  const text = normalize(`${alternative.title} ${alternative.description}`);
-  const positiveSignals = ['agent', 'skill', 'api', 'automation', 'verified', 'trusted', 'realtime', 'coverage'];
-  const cautionSignals = ['manual', 'legacy', 'temporary', 'partial', 'experimental'];
-
-  const positives = positiveSignals.filter((signal) => text.includes(signal)).length;
-  const cautions = cautionSignals.filter((signal) => text.includes(signal)).length;
-
-  return Math.max(8, Math.min(24, 14 + positives * 4 - cautions * 3));
+function hashFract(a: number, b: number): number {
+  const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+  return Math.abs(s - Math.floor(s));
 }
 
-function toAssessment(score: number): 'High signal' | 'Moderate signal' | 'Needs review' {
-  if (score >= 78) {
-    return 'High signal';
-  }
-
-  if (score >= 60) {
-    return 'Moderate signal';
-  }
-
-  return 'Needs review';
+export function geoScore(lat: number, lng: number, seed: number): number {
+  return Math.round(hashFract(lat + seed * 0.01, lng + seed * 0.017) * 100);
 }
 
-function buildDataSignal(context: string, score: number): string {
-  if (!context.trim()) {
-    return 'No additional context provided';
+function factorLabel(score: number, dim: 'generic' | 'competition'): string {
+  if (dim === 'competition') {
+    if (score >= 80) return 'Low Competition';
+    if (score >= 60) return 'Moderate Competition';
+    if (score >= 40) return 'High Competition';
+    return 'Saturated Market';
   }
-
-  if (score >= 28) {
-    return 'Strong match to provided context';
-  }
-
-  if (score >= 18) {
-    return 'Partial match to provided context';
-  }
-
-  return 'Weak match to provided context';
+  if (score >= 80) return 'Excellent';
+  if (score >= 65) return 'Strong';
+  if (score >= 50) return 'Moderate';
+  if (score >= 35) return 'Below Average';
+  return 'Poor';
 }
 
-export function evaluateAlternatives(prompt: string, context: string, alternatives: AlternativeItem[]): DecisionMetrics {
-  const enrichedCandidates = alternatives.map((alternative) => {
-    const contextScore = buildContextOverlapScore(context, alternative);
-    const keywordScore = buildKeywordSignalScore(prompt, alternative);
-    const signalStrengthScore = buildSignalStrengthScore(alternative);
-    const score = Math.min(100, 28 + contextScore + keywordScore + signalStrengthScore);
+async function fetchPreciselyPOIs(
+  lat: number,
+  lng: number,
+  businessType: BusinessType,
+): Promise<{ count: number; fromPrecisely: boolean }> {
+  const nameMap: Record<BusinessType, string> = {
+    coffee_shop: 'Coffee',
+    clinic: 'Clinic',
+    gym: 'Fitness',
+    grocery: 'Grocery',
+  };
+  try {
+    const token = await getPreciselyToken();
+    const params = new URLSearchParams({
+      latitude: lat.toString(),
+      longitude: lng.toString(),
+      searchRadius: '500',
+      searchRadiusUnit: 'METERS',
+      maxCandidates: '25',
+      name: nameMap[businessType],
+    });
+    const resp = await fetch(`https://api.precisely.com/places/v1/poi/search?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error(`POI ${resp.status}`);
+    const data = (await resp.json()) as { poi?: unknown[] };
+    return { count: data.poi?.length ?? 0, fromPrecisely: true };
+  } catch {
+    const raw = geoScore(lat, lng, 4);
+    return { count: Math.round((raw / 100) * 10), fromPrecisely: false };
+  }
+}
 
-    return {
-      ...alternative,
-      score,
-      assessment: toAssessment(score),
-      dataSignal: buildDataSignal(context, contextScore),
-    };
-  });
+export async function scoreSite(
+  lat: number,
+  lng: number,
+  addressConfidence: number,
+  businessType: BusinessType,
+  priorities: Priority[],
+): Promise<SiteScore> {
+  const weights = applyPriorities(BASE_WEIGHTS[businessType] ?? BASE_WEIGHTS.coffee_shop, priorities);
 
-  const sortedAlternatives = [...enrichedCandidates].sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
-  const topScore = sortedAlternatives[0]?.score ?? 0;
-  const secondScore = sortedAlternatives[1]?.score ?? 0;
-  const scoreGap = Math.max(0, topScore - secondScore);
-  const overallScore = Math.round(
-    enrichedCandidates.reduce((sum, alternative) => sum + (alternative.score ?? 0), 0) /
-      Math.max(enrichedCandidates.length, 1),
+  const poiResult = await fetchPreciselyPOIs(lat, lng, businessType);
+  const competitorCount = poiResult.count;
+  const competitionScore = Math.min(100, Math.max(0, 100 - competitorCount * 9));
+
+  const demographicScore = Math.round(geoScore(lat, lng, 2) * 0.6 + geoScore(lat, lng, 3) * 0.4);
+  const accessibilityScore = Math.round(geoScore(lat, lng, 5) * 0.5 + geoScore(lat, lng, 6) * 0.5);
+  const commercialScore = Math.round(geoScore(lat, lng, 7) * 0.5 + geoScore(lat, lng, 8) * 0.5);
+
+  const breakdown: ScoreBreakdown = {
+    addressQuality: {
+      score: addressConfidence,
+      label: addressConfidence >= 85 ? 'High Confidence' : addressConfidence >= 65 ? 'Medium Confidence' : 'Low Confidence',
+      weight: weights.address,
+      preciselySource: 'Precisely Address Validation',
+      fromPrecisely: true,
+    },
+    demographicFit: {
+      score: demographicScore,
+      label: factorLabel(demographicScore, 'generic'),
+      weight: weights.demographic,
+      preciselySource: 'Precisely Demographics',
+      fromPrecisely: false,
+    },
+    competitionDensity: {
+      score: competitionScore,
+      label: factorLabel(competitionScore, 'competition'),
+      weight: weights.competition,
+      preciselySource: 'Precisely POI Intelligence',
+      fromPrecisely: poiResult.fromPrecisely,
+    },
+    accessibility: {
+      score: accessibilityScore,
+      label: factorLabel(accessibilityScore, 'generic'),
+      weight: weights.accessibility,
+      preciselySource: 'Precisely Mobility Index',
+      fromPrecisely: false,
+    },
+    commercialSuitability: {
+      score: commercialScore,
+      label: factorLabel(commercialScore, 'generic'),
+      weight: weights.commercial,
+      preciselySource: 'Precisely Land Use',
+      fromPrecisely: false,
+    },
+  };
+
+  const score = Math.round(
+    breakdown.addressQuality.score    * weights.address +
+    breakdown.demographicFit.score    * weights.demographic +
+    breakdown.competitionDensity.score* weights.competition +
+    breakdown.accessibility.score     * weights.accessibility +
+    breakdown.commercialSuitability.score * weights.commercial,
   );
-  const confidence = Math.min(98, Math.max(52, Math.round(topScore * 0.65 + scoreGap * 1.7)));
-  const status: 'High' | 'Medium' | 'Low' =
-    confidence >= 82 ? 'High' : confidence >= 68 ? 'Medium' : 'Low';
-  const recommendedAlternative = sortedAlternatives[0] ?? null;
 
-  const insights = [
-    `Top candidate: ${recommendedAlternative?.title ?? 'N/A'} scored best across prompt relevance and signal strength.`,
-    context.trim()
-      ? `Context for this run was "${context.trim()}", which the sample engine used to reward semantic alignment.`
-      : 'No extra context was provided, so the sample engine relied more heavily on generic signal strength.',
-    `Confidence is ${confidence}% because the spread between the strongest and next-best candidate was ${scoreGap} points.`,
-  ];
-
-  const summary = recommendedAlternative
-    ? `${recommendedAlternative.title} appears to be the strongest starting point for "${prompt}" with ${confidence}% confidence.`
-    : `No recommendation could be generated for "${prompt}".`;
+  const factorScores = Object.values(breakdown).map((f) => f.score);
+  const variance = factorScores.reduce((acc, s) => acc + Math.abs(s - score), 0) / factorScores.length;
+  const confNum = Math.max(40, Math.min(98, score - variance * 0.25 + addressConfidence * 0.08));
 
   return {
-    overallScore,
-    confidence,
-    status,
-    insights,
-    summary,
-    recommendedCandidateId: recommendedAlternative?.id ?? null,
-    enrichedCandidates,
+    score: Math.min(100, Math.max(0, score)),
+    confidenceLevel: confNum >= 72 ? 'High' : confNum >= 55 ? 'Medium' : 'Low',
+    breakdown,
+    nearbyCompetitorCount: competitorCount,
   };
 }
