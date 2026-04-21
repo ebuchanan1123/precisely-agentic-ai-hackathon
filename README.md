@@ -1,4 +1,4 @@
-# evan-buchanan-precisely-hackathon
+# SitePilot - A Precisely MCP-powered Location Risk Engine
 
 AI-assisted site evaluation app with a React + Vite frontend and an Express + TypeScript backend. The app scores candidate business locations, suggests nearby alternatives, and can enhance explanations with Anthropic or OpenAI when keys are configured.
 
