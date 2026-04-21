@@ -1,93 +1,144 @@
 # evan-buchanan-precisely-hackathon
 
-Starter template for building AI-powered apps, agents, skills, or MCP-connected workflows on top of Precisely-style data and API experiences. The scaffold is intentionally general so you can adapt it quickly once the hackathon direction becomes clear.
+AI-assisted site evaluation app with a React + Vite frontend and an Express + TypeScript backend. The app scores candidate business locations, suggests nearby alternatives, and can enhance explanations with Anthropic or OpenAI when keys are configured.
 
 ## What is included
 
-- React + Vite client for collecting a prompt, optional context, and candidate items
-- Express + TypeScript server with a sample analysis pipeline
-- Neutral sample scoring logic that produces:
-  - overall analysis score
-  - confidence score
-  - status label
-  - recommended candidate
-  - explanation insights
-- Optional OpenAI summary generation when `OPENAI_API_KEY` is present
+- `client/`: React UI built with Vite
+- `server/`: Express API with scoring, geocoding, alternatives, and explanation services
+- mocked commercial-space recommendations ranked against the evaluated business/location context
+- fallback behavior when external API keys are missing
+- deploy support for either:
+  - a single-service deployment where Express serves the built frontend
+  - a split deployment where the frontend and backend are hosted separately
 
-## Project structure
+## Environment setup
 
-- `client/`: frontend starter app
-- `server/`: backend API and evaluation services
-- `server/src/services/scoring.ts`: starter scoring heuristics for prototyping
-- `server/src/services/llm.ts`: LLM-enhanced summary layer with fallback behavior
+Server env:
 
-## Quick start
+```bash
+cp server/.env.example server/.env
+```
+
+Client env for split deployments:
+
+```bash
+cp client/.env.example client/.env
+```
+
+Important server variables:
+
+- `PORT`: backend port, defaults to `4000`
+- `PRECISELY_API_KEY` and `PRECISELY_API_SECRET`: Precisely credentials
+- `OPENAI_API_KEY`: optional OpenAI summary support
+- `ANTHROPIC_API_KEY`: optional Anthropic summary support
+- `CORS_ORIGIN`: comma-separated allowed frontend origins for split deployments
+
+Important client variables:
+
+- `VITE_API_URL`: full backend origin for split deployments, for example `https://your-api.example.com`
+
+## Local development
+
+Install dependencies:
 
 ```bash
 npm run install:all
-cp server/.env.example server/.env
-npm run build
 ```
 
-Then run the apps in separate terminals:
+Start the backend and frontend in separate terminals:
 
 ```bash
 npm run dev:server
 npm run dev:client
 ```
 
-Client runs through Vite and proxies `/api` calls to the backend on `http://localhost:4000`.
+During local Vite development, the client proxies `/api` requests to `http://localhost:4000`.
 
-## API shape
+## Mocked commercial space recommendations
 
-`POST /api/analyze`
+After a successful business location evaluation, the app now fetches a second ranked layer of nearby commercial listings under **Recommended Commercial Spaces**.
 
-Example request:
+- The current implementation uses a small mock Ottawa-area dataset stored in the repo for demo and hackathon use.
+- Listings are ranked with a transparent deterministic fit score based on proximity, affordability, size match, and compatibility with the current business concept.
+- The mock dataset is intentionally provider-agnostic so a live commercial real-estate data source can be plugged into the backend later without redesigning the frontend flow.
+
+## Production build
+
+Build both apps:
+
+```bash
+npm run build
+```
+
+Start the production server:
+
+```bash
+npm start
+```
+
+The server will automatically serve `client/dist` if that build exists. If the frontend build is not present, the server still exposes the API and a simple root health response.
+
+## Deployment options
+
+### Option 1: Single-service deploy
+
+Use this when one Node service should host both the UI and API.
+
+1. Set your server env vars from `server/.env.example`.
+2. Run `npm run install:all`.
+3. Run `npm run build`.
+4. Start with `npm start`.
+
+In this mode:
+
+- Express serves the built frontend from `client/dist`
+- API routes stay available under `/api/*`
+- the frontend can keep `VITE_API_URL` unset and use same-origin `/api`
+
+### Option 2: Split frontend/backend deploy
+
+Use this when the frontend is hosted on a static platform and the backend is hosted separately.
+
+Backend:
+
+1. Deploy the `server` app as a Node service.
+2. Set `CORS_ORIGIN=https://your-frontend-domain.example`.
+3. Set your API keys in the backend environment.
+
+Frontend:
+
+1. Set `VITE_API_URL=https://your-backend-domain.example`
+2. Build the client with `npm run build --prefix client`
+3. Deploy `client/dist` to your static host
+
+## API routes
+
+- `POST /api/evaluate`
+- `POST /api/analyze`
+- `POST /api/real-estate/match`
+- `GET /api/health`
+
+### `POST /api/real-estate/match`
+
+Returns ranked mock commercial listings near the evaluated area.
+
+Example request shape:
 
 ```json
 {
-  "prompt": "Which asset should we prototype first for Precisely Lab?",
-  "context": "Focus on explainability, developer usefulness, and strong demo potential.",
-  "candidates": [
-    "Geocoding agent",
-    "Fraud detection scout",
-    "Real estate intelligence app"
-  ]
+  "businessType": "coffee_shop",
+  "lat": 45.4215,
+  "lng": -75.6972,
+  "budget": 5500,
+  "desiredSquareFeet": 1400,
+  "preferredPropertyType": "Storefront"
 }
 ```
 
-Example response:
+The response includes normalized listing cards with rent, square footage, distance, fit score, and human-readable match reasons.
 
-```json
-{
-  "score": 79,
-  "confidence": 86,
-  "status": "High",
-  "analyzedContext": "Focus on explainability, developer usefulness, and strong demo potential.",
-  "recommendedCandidateId": "alt-2",
-  "summary": "The strongest starting point appears to be...",
-  "insights": [
-    "Top candidate...",
-    "Context...",
-    "Confidence is..."
-  ],
-  "candidates": [
-    {
-      "id": "alt-1",
-      "title": "Geocoding agent",
-      "description": "Candidate alternative being evaluated.",
-      "score": 82,
-      "assessment": "High signal",
-      "dataSignal": "Strong match to provided context"
-    }
-  ]
-}
-```
+## Notes
 
-## Good next steps for the hackathon
-
-- Add a real domain adapter for geocoding, fraud, real estate, logistics, or catalog workflows
-- Replace the sample heuristics with API-backed scoring or tool-calling logic
-- Introduce manifest-driven asset metadata for apps, agents, skills, or MCP actions
-- Add vertical-specific criteria such as coverage, risk, cost, trust, or data freshness
-- Persist runs so you can compare scenarios and show decision traces during demos
+- If Precisely credentials are missing or unavailable, the server falls back to deterministic mock geocoding.
+- If both LLM keys are missing, the server falls back to deterministic explanation text.

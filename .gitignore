@@ -8,3 +8,8 @@ server/dist
 .env
 server/.env
 server/src/.env
+.env.*
+!.env.example
+!**/.env.example
+.vscode/mcp.json
+!.vscode/mcp.example.json
